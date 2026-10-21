@@ -111,29 +111,35 @@ The assessment is not a confirmed plant-disease diagnosis.
             inferenceConfig={"maxTokens": 500},
         )
 
-        content = response.get("output", {}).get(
-            "message", {}
-        ).get("content", [])
+        message = response.get("output", {}).get("message", {})
+        content = message.get("content", [])
 
-        # Extract text blocks while safely ignoring other
-        # response types, such as reasoningContent.
+        # Extract only user-facing text blocks.
         text_blocks = [
-            block["text"]
-            for block in content
-            if isinstance(block, dict)
-            and isinstance(block.get("text"), str)
-        ]
+    block["text"]
+    for block in content
+    if isinstance(block, dict)
+    and isinstance(block.get("text"), str)
+    and block["text"].strip()
+]
 
         if not text_blocks:
+            stop_reason = response.get("stopReason", "unknown")
             return {
                 "success": False,
                 "error": (
-                    "Bedrock returned no readable text. "
-                    "Inspect the model response format."
+                    "Bedrock returned no user-facing text. "
+                    f"Stop reason: {stop_reason}. "
+                    "Inspect the response format and model output."
                 ),
+                "stop_reason": stop_reason,
+                "response_content_types": [
+                    list(block.keys())
+                    for block in content
+                    if isinstance(block, dict)
+                ],
                 "human_review_required": True,
             }
-
         return {
             "success": True,
             "model_id": BEDROCK_MODEL_ID,

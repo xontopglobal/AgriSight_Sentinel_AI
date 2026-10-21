@@ -5,3 +5,14 @@ _pycache_/
 *.pyc
 
 .pytest_cache/
+
+# Local backup archives
+*.zip
+
+# Local archives
+*.zip
+
+# AWS credentials and local configuration
+.aws/
+credentials
+config
