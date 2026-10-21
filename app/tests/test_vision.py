@@ -2,7 +2,6 @@
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from app.vision import analyze_leaf_image
 
@@ -16,7 +15,6 @@ def test_sample_leaf_image_loads():
     assert image is not None, f"Could not load image: {image_path}"
     assert image.ndim == 3
     assert image.shape[2] == 3
-
 
 def test_analyze_leaf_image_returns_quality_metrics():
     project_root = Path(__file__).resolve().parents[2]
