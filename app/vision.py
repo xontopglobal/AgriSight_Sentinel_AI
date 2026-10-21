@@ -27,17 +27,16 @@ def analyze_leaf_image(image_path: str) -> dict:
     height, width = image.shape[:2]
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        # Basic image-quality indicators for visual screening.
-    brightness = round(float(np.mean(gray)), 2)
 
+    # Basic image-quality indicators for visual screening.
+    brightness = round(float(np.mean(gray)), 2)
     minimum_dimension = min(height, width)
     image_resolution_ok = minimum_dimension >= 256
 
-    # A preliminary threshold; validate against real field images.
-    sharpness_ok = (
-        float(cv2.Laplacian(gray, cv2.CV_64F).var()) >= 50
+    sharpness = round(
+        float(cv2.Laplacian(gray, cv2.CV_64F).var()), 2
     )
-
+    sharpness_ok = sharpness >= 50
     brightness_ok = brightness >= 35
 
     quality_flags = []
@@ -51,7 +50,7 @@ def analyze_leaf_image(image_path: str) -> dict:
     if not brightness_ok:
         quality_flags.append("too_dark")
 
-    # Estimate how much of the image contains green pixels.
+    # Estimate the proportion of green pixels.
     green_mask = cv2.inRange(
         hsv,
         np.array([25, 35, 25], dtype=np.uint8),
@@ -64,11 +63,6 @@ def analyze_leaf_image(image_path: str) -> dict:
         100 * green_pixels / total_pixels, 2
     )
 
-    # A simple sharpness indicator; not a disease detector.
-    sharpness = round(
-        float(cv2.Laplacian(gray, cv2.CV_64F).var()), 2
-    )
-
     return {
         "success": True,
         "image": path.name,
@@ -77,7 +71,7 @@ def analyze_leaf_image(image_path: str) -> dict:
         "channels": int(image.shape[2]),
         "green_pixel_percentage": green_percentage,
         "sharpness_score": sharpness,
-                "brightness_score": brightness,
+        "brightness_score": brightness,
         "image_quality": {
             "resolution_ok": image_resolution_ok,
             "sharpness_ok": sharpness_ok,

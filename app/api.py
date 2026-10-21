@@ -4,15 +4,18 @@ import tempfile
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
-from app.agent import decide_next_action
+from app.agent import (
+    decide_next_action,
+    screen_crop_with_bedrock,
+)
 
 app = FastAPI(
     title="AgriSight Sentinel AI",
     description=(
-        "Crop image screening with OpenCV and "
-        "quality-aware inspection."
+        "Crop image screening with OpenCV, "
+        "quality-aware inspection, and Amazon Bedrock."
     ),
-    version="0.1.0",
+    version="0.2.0",
 )
 
 
@@ -22,13 +25,17 @@ def home():
         "name": "AgriSight Sentinel AI",
         "status": "running",
         "opencv_endpoint": "/api/analyze",
+        "bedrock_enabled": True,
         "docs": "/docs",
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "service": "AgriSight Sentinel AI",
+    }
 
 
 @app.post("/api/analyze")
@@ -80,6 +87,26 @@ async def analyze_image(file: UploadFile = File(...)):
             temporary_path = Path(temporary_file.name)
 
         result = decide_next_action(str(temporary_path))
+
+        # Do not call Bedrock if the image failed analysis
+        # or needs to be captured again.
+        if (
+            result.get("success")
+            and result.get("action") == "continue_screening"
+        ):
+            bedrock_result = screen_crop_with_bedrock(
+                result["image_analysis"]
+            )
+            result["bedrock_screening"] = bedrock_result
+
+            if not bedrock_result.get("success"):
+                result["human_review_required"] = True
+                result["screening_notice"] = (
+                    "Preliminary image checks passed, but the "
+                    "AI assessment could not be completed. "
+                    "Please try again or request expert review."
+                )
+
         return result
 
     finally:
