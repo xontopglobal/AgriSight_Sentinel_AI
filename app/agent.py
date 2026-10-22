@@ -2,7 +2,13 @@
 import json
 import os
 
+from botocore.config import Config
+
+import json
+import os
+
 import boto3
+from botocore.config import Config
 from dotenv import load_dotenv
 
 from app.vision import analyze_leaf_image
@@ -75,9 +81,20 @@ def screen_crop_with_bedrock(image_analysis: dict) -> dict:
             "human_review_required": False,
         }
 
+    from botocore.config import Config
+
+
     client = boto3.client(
         "bedrock-runtime",
         region_name=AWS_REGION,
+        config=Config(
+            connect_timeout=10,
+            read_timeout=60,
+            retries={
+                "max_attempts": 1,
+                "mode": "standard",
+            },
+        ),
     )
 
     prompt = f"""
@@ -115,13 +132,15 @@ The assessment is not a confirmed plant-disease diagnosis.
         content = message.get("content", [])
 
         # Extract only user-facing text blocks.
+       
         text_blocks = [
-    block["text"]
-    for block in content
-    if isinstance(block, dict)
-    and isinstance(block.get("text"), str)
-    and block["text"].strip()
-]
+            block["text"]
+            for block in content
+            if isinstance(block, dict)
+            and isinstance(block.get("text"), str)
+            and block["text"].strip()
+        ]
+
 
         if not text_blocks:
             stop_reason = response.get("stopReason", "unknown")
@@ -140,7 +159,8 @@ The assessment is not a confirmed plant-disease diagnosis.
                 ],
                 "human_review_required": True,
             }
-        return {
+
+            return {
             "success": True,
             "model_id": BEDROCK_MODEL_ID,
             "assessment": "\n".join(text_blocks),
