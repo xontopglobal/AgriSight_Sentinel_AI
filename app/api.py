@@ -1,7 +1,7 @@
 
 import logging
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -128,6 +128,7 @@ async def analyze_image(file: UploadFile = File(...)):
                     logger.info(
                         "Starting Bedrock screening for image analysis."
                     )
+
                     bedrock_result = screen_crop_with_bedrock(
                         image_analysis
                     )
@@ -142,24 +143,30 @@ async def analyze_image(file: UploadFile = File(...)):
                             "error": "Bedrock returned an invalid response.",
                             "human_review_required": True,
                         }
+
                     elif not bedrock_result.get("success"):
-                        # Log the returned error, but never log credentials.
                         logger.error(
                             "Bedrock screening reported failure: %s",
                             bedrock_result.get(
                                 "error", "No error details provided"
                             ),
                         )
-                    else:
-                        logger.info("Bedrock screening completed successfully.")
 
-                except Exception:
+                    else:
+                        logger.info(
+                            "Bedrock screening completed successfully."
+                        )
+
+                except Exception as error:
                     logger.exception(
                         "Unexpected exception during Bedrock screening."
                     )
                     bedrock_result = {
                         "success": False,
-                        "error": "Bedrock request failed. Check server logs.",
+                        "error": (
+                            f"Bedrock request failed: "
+                            f"{type(error).__name__}: {error}"
+                        ),
                         "human_review_required": True,
                     }
 

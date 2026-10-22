@@ -11,10 +11,11 @@ from dotenv import load_dotenv
 
 from app.vision import analyze_leaf_image
 
+
 logger = logging.getLogger(__name__)
 
-# Load local development settings if app/.env exists.
-# Render's configured environment variables remain usable.
+# Load local settings if app/.env exists.
+# Render environment variables are used in production.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
@@ -77,7 +78,7 @@ def screen_crop_with_bedrock(image_analysis: dict) -> dict:
     """
     Ask Amazon Bedrock to interpret the OpenCV analysis.
 
-    Note: this version sends analysis data, not the original image.
+    This sends analysis data, not the original image.
     Results are preliminary and require human review.
     """
 
@@ -104,17 +105,16 @@ Interpret the following computer-vision analysis of a crop leaf:
 {json.dumps(image_analysis, ensure_ascii=False, default=str)}
 
 Provide a cautious preliminary assessment.
-Distinguish measured or observed evidence from uncertainty.
-Do not invent symptoms, identify a disease without supporting evidence,
-or claim a confirmed diagnosis.
+Distinguish observed evidence from uncertainty.
+Do not invent symptoms or claim a confirmed diagnosis.
 
 Return these sections:
 1. Preliminary observations
-2. Possible concerns supported by the provided evidence
+2. Possible concerns supported by the evidence
 3. Recommended next steps
 4. Whether expert inspection is advisable
 
-If the data is insufficient to identify a disease, state that clearly.
+If the data is insufficient to identify a disease, say so clearly.
 This is not a confirmed plant-disease diagnosis.
 """
 
@@ -165,12 +165,14 @@ This is not a confirmed plant-disease diagnosis.
 
         if not text_blocks:
             stop_reason = response.get("stopReason", "unknown")
+
             logger.error(
                 "Bedrock returned no text. stop_reason=%s, "
                 "content_block_count=%d",
                 stop_reason,
                 len(content),
             )
+
             return {
                 "success": False,
                 "error": "Bedrock returned no assessment text.",
@@ -194,9 +196,9 @@ This is not a confirmed plant-disease diagnosis.
     except ClientError as error:
         details = error.response.get("Error", {})
         error_code = details.get("Code", "AWSClientError")
-        request_id = error.response.get("ResponseMetadata", {}).get(
-            "RequestId", "unknown"
-        )
+        request_id = error.response.get(
+            "ResponseMetadata", {}
+        ).get("RequestId", "unknown")
 
         logger.exception(
             "Bedrock AWS error: code=%s, request_id=%s",
@@ -213,19 +215,22 @@ This is not a confirmed plant-disease diagnosis.
         }
 
     except BotoCoreError as error:
-        logger.exception("Bedrock SDK or configuration error: %s", error)
+        logger.exception("Bedrock SDK error")
 
         return {
             "success": False,
-            "error": "Bedrock SDK or AWS configuration failed.",
+            "error": f"Bedrock SDK error: {type(error).__name__}: {error}",
             "human_review_required": True,
         }
 
-    except Exception:
-        logger.exception("Unexpected error during Bedrock screening.")
+    except Exception as error:
+        logger.exception("Unexpected error during Bedrock screening")
 
         return {
             "success": False,
-            "error": "Unexpected Bedrock screening error. Check server logs.",
+            "error": (
+                f"Bedrock screening failed: "
+                f"{type(error).__name__}: {error}"
+            ),
             "human_review_required": True,
         }
