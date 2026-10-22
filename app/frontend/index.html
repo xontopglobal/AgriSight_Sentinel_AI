@@ -216,10 +216,65 @@
                     throw new Error(data.detail || `Request failed (${response.status}).`);
                 }
 
-                resultOutput.textContent = JSON.stringify(data, null, 2);
+              
+                const quality = data.image_analysis?.image_quality || {};
+                const bedrock = data.bedrock_screening || {};
+                const assessment = bedrock.assessment || "No AI assessment was returned.";
+
+                const report = document.createElement("div");
+                report.className = "screening-report";
+
+                const heading = document.createElement("h3");
+                heading.textContent =
+                    data.action === "continue_screening"
+                        ? "Preliminary screening completed"
+                        : "Screening needs attention";
+                report.appendChild(heading);
+
+                const intro = document.createElement("p");
+                intro.textContent =
+                    data.reason || "Review the observations and recommendations below.";
+                report.appendChild(intro);
+
+                const qualityHeading = document.createElement("h3");
+                qualityHeading.textContent = "Image quality";
+                report.appendChild(qualityHeading);
+
+                const qualityList = document.createElement("ul");
+                [
+                    ["Resolution", quality.resolution_ok],
+                    ["Sharpness", quality.sharpness_ok],
+                    ["Brightness", quality.brightness_ok]
+                ].forEach(([label, passed]) => {
+                    const item = document.createElement("li");
+                    item.textContent =
+                        label + ": " +
+                        (passed === true ? "Passed" :
+                            passed === false ? "Needs attention" : "Not reported");
+                    qualityList.appendChild(item);
+                });
+                report.appendChild(qualityList);
+
+                const aiHeading = document.createElement("h3");
+                aiHeading.textContent = "AI observations";
+                report.appendChild(aiHeading);
+
+                const aiText = document.createElement("p");
+                aiText.textContent = typeof assessment === "string"
+                   ? assessment.replace(/\\n/g, "\n").replace(/\*\*/g, "")
+                    : JSON.stringify(assessment);
+                report.appendChild(aiText);
+
+                const note = document.createElement("p");
+                note.className = "report-disclaimer";
+                note.textContent =
+                    "Important: This is preliminary AI guidance, not a confirmed crop disease diagnosis. Monitor the crop and consult an agricultural extension officer if symptoms persist.";
+                report.appendChild(note);
+
+                resultOutput.replaceChildren(report);
                 resultPanel.hidden = false;
                 status.textContent = "Screening response received. Review the preliminary result below.";
-            } catch (error) {
+                            } catch (error) {
                 status.className = "error";
                 status.textContent = "Could not complete screening: " + error.message +
                     "\nCheck the Render service URL and backend logs, then try again.";
@@ -227,7 +282,3 @@
                 button.disabled = false;
             }
         });
-    </script>
-</body>
-
-</html>
