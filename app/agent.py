@@ -160,7 +160,8 @@ The assessment is not a confirmed plant-disease diagnosis.
                 "human_review_required": True,
             }
 
-            return {
+        # Return the successful assessment outside the if block.
+        return {
             "success": True,
             "model_id": BEDROCK_MODEL_ID,
             "assessment": "\n".join(text_blocks),
