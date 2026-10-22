@@ -19,8 +19,6 @@ app = FastAPI(
     version="0.2.0",
 )
 
-
-from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -32,6 +30,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+
 
 @app.get("/")
 def home():
@@ -102,15 +101,34 @@ async def analyze_image(file: UploadFile = File(...)):
 
         result = decide_next_action(str(temporary_path))
 
-        # Do not call Bedrock if the image failed analysis
-        # or needs to be captured again.
+        # Call Bedrock only after successful image analysis.
         if (
-            result.get("success")
+            isinstance(result, dict)
+            and result.get("success")
             and result.get("action") == "continue_screening"
         ):
-            bedrock_result = screen_crop_with_bedrock(
-                result["image_analysis"]
-            )
+            image_analysis = result.get("image_analysis")
+
+            if not isinstance(image_analysis, dict):
+                bedrock_result = {
+                    "success": False,
+                    "error": "Image analysis data is missing or invalid.",
+                    "human_review_required": True,
+                }
+            else:
+                bedrock_result = screen_crop_with_bedrock(
+                    image_analysis
+                )
+
+                # Protect the API if Bedrock returns an
+                # unexpected response type.
+                if not isinstance(bedrock_result, dict):
+                    bedrock_result = {
+                        "success": False,
+                        "error": "Bedrock returned an invalid response.",
+                        "human_review_required": True,
+                    }
+
             result["bedrock_screening"] = bedrock_result
 
             if not bedrock_result.get("success"):
@@ -126,4 +144,5 @@ async def analyze_image(file: UploadFile = File(...)):
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
         await file.close()
