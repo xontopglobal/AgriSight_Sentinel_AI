@@ -1,4 +1,5 @@
 
+import logging
 from pathlib import Path
 import tempfile
 
@@ -10,13 +11,15 @@ from app.agent import (
     screen_crop_with_bedrock,
 )
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="AgriSight Sentinel AI",
     description=(
         "Crop image screening with OpenCV, "
         "quality-aware inspection, and Amazon Bedrock."
     ),
-    version="0.2.0",
+    version="0.2.1",
 )
 
 app.add_middleware(
@@ -79,14 +82,8 @@ async def analyze_image(file: UploadFile = File(...)):
             detail="Image must be 10 MB or smaller.",
         )
 
-    suffix = Path(file.filename or "upload.png").suffix
-
-    if suffix.lower() not in {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-    }:
+    suffix = Path(file.filename or "upload.png").suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
         suffix = ".png"
 
     temporary_path = None
@@ -101,31 +98,68 @@ async def analyze_image(file: UploadFile = File(...)):
 
         result = decide_next_action(str(temporary_path))
 
-        # Call Bedrock only after successful image analysis.
-        if (
-            isinstance(result, dict)
-            and result.get("success")
+        if not isinstance(result, dict):
+            logger.error("Image pipeline returned an invalid result.")
+            raise HTTPException(
+                status_code=500,
+                detail="Image analysis could not be completed.",
+            )
+
+        should_call_bedrock = (
+            result.get("success") is True
             and result.get("action") == "continue_screening"
-        ):
+        )
+
+        if should_call_bedrock:
             image_analysis = result.get("image_analysis")
 
             if not isinstance(image_analysis, dict):
+                logger.error(
+                    "Bedrock skipped: image_analysis is missing "
+                    "or is not a dictionary."
+                )
                 bedrock_result = {
                     "success": False,
                     "error": "Image analysis data is missing or invalid.",
                     "human_review_required": True,
                 }
             else:
-                bedrock_result = screen_crop_with_bedrock(
-                    image_analysis
-                )
+                try:
+                    logger.info(
+                        "Starting Bedrock screening for image analysis."
+                    )
+                    bedrock_result = screen_crop_with_bedrock(
+                        image_analysis
+                    )
 
-                # Protect the API if Bedrock returns an
-                # unexpected response type.
-                if not isinstance(bedrock_result, dict):
+                    if not isinstance(bedrock_result, dict):
+                        logger.error(
+                            "Bedrock function returned an unexpected type: %s",
+                            type(bedrock_result).__name__,
+                        )
+                        bedrock_result = {
+                            "success": False,
+                            "error": "Bedrock returned an invalid response.",
+                            "human_review_required": True,
+                        }
+                    elif not bedrock_result.get("success"):
+                        # Log the returned error, but never log credentials.
+                        logger.error(
+                            "Bedrock screening reported failure: %s",
+                            bedrock_result.get(
+                                "error", "No error details provided"
+                            ),
+                        )
+                    else:
+                        logger.info("Bedrock screening completed successfully.")
+
+                except Exception:
+                    logger.exception(
+                        "Unexpected exception during Bedrock screening."
+                    )
                     bedrock_result = {
                         "success": False,
-                        "error": "Bedrock returned an invalid response.",
+                        "error": "Bedrock request failed. Check server logs.",
                         "human_review_required": True,
                     }
 
@@ -134,9 +168,9 @@ async def analyze_image(file: UploadFile = File(...)):
             if not bedrock_result.get("success"):
                 result["human_review_required"] = True
                 result["screening_notice"] = (
-                    "Preliminary image checks passed, but the "
-                    "AI assessment could not be completed. "
-                    "Please try again or request expert review."
+                    "Preliminary image checks passed, but the AI "
+                    "assessment could not be completed. Please try "
+                    "again or request expert review."
                 )
 
         return result

@@ -1,20 +1,21 @@
 
 import json
+import logging
 import os
-
-from botocore.config import Config
-
-import json
-import os
+from pathlib import Path
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
 from app.vision import analyze_leaf_image
 
-# Load the application's environment configuration.
-load_dotenv("app/.env")
+logger = logging.getLogger(__name__)
+
+# Load local development settings if app/.env exists.
+# Render's configured environment variables remain usable.
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.getenv(
@@ -24,21 +25,27 @@ BEDROCK_MODEL_ID = os.getenv(
 
 
 def decide_next_action(image_path: str) -> dict:
-    """Check whether a crop image is ready for visual screening."""
+    """Check whether a crop image is ready for AI screening."""
 
     analysis = analyze_leaf_image(image_path)
 
-    if not analysis.get("success"):
+    if not isinstance(analysis, dict) or not analysis.get("success"):
+        error = (
+            analysis.get("error", "Image analysis failed.")
+            if isinstance(analysis, dict)
+            else "Image analysis returned an invalid result."
+        )
         return {
             "success": False,
             "action": "stop",
-            "reason": analysis.get(
-                "error", "Image analysis failed."
-            ),
+            "reason": error,
             "human_review_required": False,
         }
 
     quality = analysis.get("image_quality", {})
+
+    if not isinstance(quality, dict):
+        quality = {}
 
     if quality.get("needs_retake", True):
         return {
@@ -68,55 +75,69 @@ def decide_next_action(image_path: str) -> dict:
 
 def screen_crop_with_bedrock(image_analysis: dict) -> dict:
     """
-    Use Amazon Bedrock to interpret existing image-analysis results.
+    Ask Amazon Bedrock to interpret the OpenCV analysis.
 
-    This sends the analysis data to the model, not the original image.
-    Findings are preliminary and require human review.
+    Note: this version sends analysis data, not the original image.
+    Results are preliminary and require human review.
     """
 
-    if not image_analysis.get("success"):
+    if not isinstance(image_analysis, dict) or not image_analysis.get("success"):
         return {
             "success": False,
             "error": "A successful image analysis is required.",
-            "human_review_required": False,
+            "human_review_required": True,
         }
 
-    from botocore.config import Config
-
-
-    client = boto3.client(
-        "bedrock-runtime",
-        region_name=AWS_REGION,
-        config=Config(
-            connect_timeout=10,
-            read_timeout=60,
-            retries={
-                "max_attempts": 1,
-                "mode": "standard",
-            },
-        ),
-    )
+    if not AWS_REGION or not BEDROCK_MODEL_ID:
+        logger.error("AWS region or Bedrock model ID is missing.")
+        return {
+            "success": False,
+            "error": "AWS region or Bedrock model configuration is missing.",
+            "human_review_required": True,
+        }
 
     prompt = f"""
-You are an agricultural screening assistant.
+You are an agricultural crop-screening assistant.
 
-Review the following computer-vision analysis of a crop leaf:
-{json.dumps(image_analysis, ensure_ascii=False)}
+Interpret the following computer-vision analysis of a crop leaf:
 
-Provide a cautious preliminary assessment. Distinguish observed
-evidence from uncertainty. Do not claim a confirmed diagnosis when
-the provided data is insufficient.
+{json.dumps(image_analysis, ensure_ascii=False, default=str)}
 
-Return a concise response with:
+Provide a cautious preliminary assessment.
+Distinguish measured or observed evidence from uncertainty.
+Do not invent symptoms, identify a disease without supporting evidence,
+or claim a confirmed diagnosis.
+
+Return these sections:
 1. Preliminary observations
-2. Possible concerns, if supported by the data
+2. Possible concerns supported by the provided evidence
 3. Recommended next steps
 4. Whether expert inspection is advisable
 
-The assessment is not a confirmed plant-disease diagnosis.
+If the data is insufficient to identify a disease, state that clearly.
+This is not a confirmed plant-disease diagnosis.
 """
 
     try:
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=AWS_REGION,
+            config=Config(
+                connect_timeout=10,
+                read_timeout=90,
+                retries={
+                    "max_attempts": 2,
+                    "mode": "standard",
+                },
+            ),
+        )
+
+        logger.info(
+            "Calling Bedrock: region=%s, model_id=%s",
+            AWS_REGION,
+            BEDROCK_MODEL_ID,
+        )
+
         response = client.converse(
             modelId=BEDROCK_MODEL_ID,
             messages=[
@@ -125,89 +146,86 @@ The assessment is not a confirmed plant-disease diagnosis.
                     "content": [{"text": prompt}],
                 }
             ],
-            inferenceConfig={"maxTokens": 500},
+            inferenceConfig={
+                "maxTokens": 700,
+                "temperature": 0.2,
+            },
         )
 
         message = response.get("output", {}).get("message", {})
         content = message.get("content", [])
 
-        # Extract only user-facing text blocks.
-       
         text_blocks = [
-            block["text"]
+            block["text"].strip()
             for block in content
             if isinstance(block, dict)
             and isinstance(block.get("text"), str)
             and block["text"].strip()
         ]
 
-
         if not text_blocks:
             stop_reason = response.get("stopReason", "unknown")
+            logger.error(
+                "Bedrock returned no text. stop_reason=%s, "
+                "content_block_count=%d",
+                stop_reason,
+                len(content),
+            )
             return {
                 "success": False,
-                "error": (
-                    "Bedrock returned no user-facing text. "
-                    f"Stop reason: {stop_reason}. "
-                    "Inspect the response format and model output."
-                ),
+                "error": "Bedrock returned no assessment text.",
                 "stop_reason": stop_reason,
-                "response_content_types": [
-                    list(block.keys())
-                    for block in content
-                    if isinstance(block, dict)
-                ],
                 "human_review_required": True,
             }
 
+        assessment = "\n".join(text_blocks)
 
+        logger.info("Bedrock returned an assessment successfully.")
 
-
-        # Return the successful assessment outside the if block.
         return {
             "success": True,
             "model_id": BEDROCK_MODEL_ID,
-            "assessment": "\n".join(text_blocks),
+            "assessment": assessment,
+            "stop_reason": response.get("stopReason", "unknown"),
             "human_review_required": True,
             "diagnosis_confirmed": False,
         }
 
-    except Exception as error:
+    except ClientError as error:
+        details = error.response.get("Error", {})
+        error_code = details.get("Code", "AWSClientError")
+        request_id = error.response.get("ResponseMetadata", {}).get(
+            "RequestId", "unknown"
+        )
+
+        logger.exception(
+            "Bedrock AWS error: code=%s, request_id=%s",
+            error_code,
+            request_id,
+        )
+
         return {
             "success": False,
-            "error": f"Bedrock screening failed: {error}",
+            "error": f"Bedrock AWS request failed ({error_code}).",
+            "aws_error_code": error_code,
+            "request_id": request_id,
             "human_review_required": True,
-        }
-    
-        # Return the successful assessment outside the if block.
-        return {
-            "success": True,
-            "model_id": BEDROCK_MODEL_ID,
-            "assessment": "\n".join(text_blocks),
-            "human_review_required": True,
-            "diagnosis_confirmed": False,
         }
 
-    except Exception as error:
+    except BotoCoreError as error:
+        logger.exception("Bedrock SDK or configuration error: %s", error)
+
         return {
             "success": False,
-            "error": f"Bedrock screening failed: {error}",
+            "error": "Bedrock SDK or AWS configuration failed.",
             "human_review_required": True,
         }
 
+    except Exception:
+        logger.exception("Unexpected error during Bedrock screening.")
 
-        # Return the successful assessment outside the if block.
-        return {
-            "success": True,
-            "model_id": BEDROCK_MODEL_ID,
-            "assessment": "\n".join(text_blocks),
-            "human_review_required": True,
-            "diagnosis_confirmed": False,
-        }
-
-    except Exception as error:
         return {
             "success": False,
-            "error": f"Bedrock screening failed: {error}",
+            "error": "Unexpected Bedrock screening error. Check server logs.",
             "human_review_required": True,
         }
